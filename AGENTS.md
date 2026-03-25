@@ -20,6 +20,7 @@ read README.md, then ask which module(s) to work on. Based on the answer, read t
 - Never hardcode key checks with, eg. `matchesKey(keyData, "ctrl+x")`. All keybindings must be configurable. Add default to matching object (`DEFAULT_EDITOR_KEYBINDINGS` or `DEFAULT_APP_KEYBINDINGS`)
 
 ## Commands
+- Script paths in this file are repo-root-relative unless an absolute path is shown.
 - After code changes (not documentation changes): `npm run check` (get full output, no tail). Fix all errors, warnings, and infos before committing.
 - Note: `npm run check` does not run tests.
 - NEVER run: `npm run dev`, `npm run build`, `npm test`
@@ -38,8 +39,8 @@ When reading issues:
   ```
 
 ## OSS Weekend
-- If the user says `enable OSS weekend mode until X`, run `node scripts/oss-weekend.mjs --mode=close --end-date=YYYY-MM-DD --git` with the requested end date
-- If the user says `end OSS weekend mode`, run `node scripts/oss-weekend.mjs --mode=open --git`
+- If the user says `enable OSS weekend mode until X`, run `node ./scripts/oss-weekend.mjs --mode=close --end-date=YYYY-MM-DD --git` with the requested end date
+- If the user says `end OSS weekend mode`, run `node ./scripts/oss-weekend.mjs --mode=open --git`
 - The script updates `README.md`, `packages/coding-agent/README.md`, and `.github/oss-weekend.json`
 - With `--git`, the script stages only those OSS weekend files, commits them, and pushes them
 - During OSS weekend, `.github/workflows/oss-weekend-issues.yml` auto-closes new issues from non-maintainers, and `.github/workflows/pr-gate.yml` auto-closes PRs from approved non-maintainers with the weekend message
