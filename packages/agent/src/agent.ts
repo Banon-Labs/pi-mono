@@ -24,6 +24,7 @@ import type {
 	AgentMessage,
 	AgentState,
 	AgentTool,
+	AssistantMessageTransform,
 	BeforeToolCallContext,
 	BeforeToolCallResult,
 	StreamFn,
@@ -52,6 +53,13 @@ export interface AgentOptions {
 	 * Use for context pruning, injecting external context, etc.
 	 */
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
+
+	/**
+	 * Optional transform applied to assistant messages as they stream.
+	 * Use this for sanitizing or rewriting assistant prose before it reaches
+	 * the UI or session history.
+	 */
+	transformAssistantMessage?: AssistantMessageTransform;
 
 	/**
 	 * Steering mode: "all" = send all steering messages at once, "one-at-a-time" = one per turn
@@ -129,6 +137,7 @@ export class Agent {
 	private listeners = new Set<(e: AgentEvent) => void>();
 	private abortController?: AbortController;
 	private convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
+	private transformAssistantMessage?: AssistantMessageTransform;
 	private transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
 	private steeringQueue: AgentMessage[] = [];
 	private followUpQueue: AgentMessage[] = [];
@@ -157,6 +166,7 @@ export class Agent {
 		this._state = { ...this._state, ...opts.initialState };
 		this.convertToLlm = opts.convertToLlm || defaultConvertToLlm;
 		this.transformContext = opts.transformContext;
+		this.transformAssistantMessage = opts.transformAssistantMessage;
 		this.steeringMode = opts.steeringMode || "one-at-a-time";
 		this.followUpMode = opts.followUpMode || "one-at-a-time";
 		this.streamFn = opts.streamFn || streamSimple;
@@ -541,6 +551,7 @@ export class Agent {
 			afterToolCall: this._afterToolCall,
 			convertToLlm: this.convertToLlm,
 			transformContext: this.transformContext,
+			transformAssistantMessage: this.transformAssistantMessage,
 			getApiKey: this.getApiKey,
 			getSteeringMessages: async () => {
 				if (skipInitialSteeringPoll) {

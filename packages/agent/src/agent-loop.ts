@@ -5,6 +5,7 @@
 
 import {
 	type AssistantMessage,
+	type AssistantMessageEvent,
 	type Context,
 	EventStream,
 	streamSimple,
@@ -231,6 +232,96 @@ async function runLoop(
 	await emit({ type: "agent_end", messages: newMessages });
 }
 
+async function applyAssistantMessageTransform(
+	message: AssistantMessage,
+	event: AssistantMessageEvent,
+	config: AgentLoopConfig,
+	signal?: AbortSignal,
+): Promise<AssistantMessage> {
+	if (!config.transformAssistantMessage) {
+		return message;
+	}
+
+	return (await config.transformAssistantMessage(message, event, signal)) ?? message;
+}
+
+function sanitizeAssistantMessageEvent(
+	event: Extract<
+		AssistantMessageEvent,
+		{
+			type:
+				| "start"
+				| "text_start"
+				| "text_delta"
+				| "text_end"
+				| "thinking_start"
+				| "thinking_delta"
+				| "thinking_end"
+				| "toolcall_start"
+				| "toolcall_delta"
+				| "toolcall_end";
+		}
+	>,
+	partial: AssistantMessage,
+): AssistantMessageEvent {
+	if (event.type === "start") {
+		return { ...event, partial };
+	}
+
+	const originalContent = event.partial.content[event.contentIndex];
+	const mappedIndex = (() => {
+		if (!originalContent) {
+			return event.contentIndex;
+		}
+		switch (originalContent.type) {
+			case "text":
+				return partial.content.findIndex(
+					(content) => content.type === "text" && content.text === originalContent.text,
+				);
+			case "thinking":
+				return partial.content.findIndex(
+					(content) => content.type === "thinking" && content.thinking === originalContent.thinking,
+				);
+			case "toolCall":
+				return partial.content.findIndex(
+					(content) => content.type === "toolCall" && content.id === originalContent.id,
+				);
+		}
+	})();
+	const currentContent = mappedIndex >= 0 ? partial.content[mappedIndex] : undefined;
+
+	switch (event.type) {
+		case "text_start":
+			return { ...event, partial, contentIndex: mappedIndex };
+		case "text_delta":
+			return currentContent?.type === "text"
+				? { ...event, partial, contentIndex: mappedIndex }
+				: { ...event, partial, contentIndex: mappedIndex, delta: "" };
+		case "text_end":
+			return currentContent?.type === "text"
+				? { ...event, partial, contentIndex: mappedIndex }
+				: { ...event, partial, contentIndex: mappedIndex, content: "" };
+		case "thinking_start":
+			return { ...event, partial, contentIndex: mappedIndex };
+		case "thinking_delta":
+			return currentContent?.type === "thinking"
+				? { ...event, partial, contentIndex: mappedIndex }
+				: { ...event, partial, contentIndex: mappedIndex, delta: "" };
+		case "thinking_end":
+			return currentContent?.type === "thinking"
+				? { ...event, partial, contentIndex: mappedIndex }
+				: { ...event, partial, contentIndex: mappedIndex, content: "" };
+		case "toolcall_start":
+			return { ...event, partial, contentIndex: mappedIndex };
+		case "toolcall_delta":
+			return currentContent?.type === "toolCall"
+				? { ...event, partial, contentIndex: mappedIndex }
+				: { ...event, partial, contentIndex: mappedIndex, delta: "" };
+		case "toolcall_end":
+			return { ...event, partial, contentIndex: mappedIndex };
+	}
+}
+
 /**
  * Stream an assistant response from the LLM.
  * This is where AgentMessage[] gets transformed to Message[] for the LLM.
@@ -275,12 +366,14 @@ async function streamAssistantResponse(
 
 	for await (const event of response) {
 		switch (event.type) {
-			case "start":
-				partialMessage = event.partial;
+			case "start": {
+				const transformedPartial = await applyAssistantMessageTransform(event.partial, event, config, signal);
+				partialMessage = transformedPartial;
 				context.messages.push(partialMessage);
 				addedPartial = true;
 				await emit({ type: "message_start", message: { ...partialMessage } });
 				break;
+			}
 
 			case "text_start":
 			case "text_delta":
@@ -292,11 +385,13 @@ async function streamAssistantResponse(
 			case "toolcall_delta":
 			case "toolcall_end":
 				if (partialMessage) {
-					partialMessage = event.partial;
+					const transformedPartial = await applyAssistantMessageTransform(event.partial, event, config, signal);
+					partialMessage = transformedPartial;
 					context.messages[context.messages.length - 1] = partialMessage;
+					const transformedEvent = sanitizeAssistantMessageEvent(event, partialMessage);
 					await emit({
 						type: "message_update",
-						assistantMessageEvent: event,
+						assistantMessageEvent: transformedEvent,
 						message: { ...partialMessage },
 					});
 				}
@@ -304,7 +399,12 @@ async function streamAssistantResponse(
 
 			case "done":
 			case "error": {
-				const finalMessage = await response.result();
+				let finalMessage = await response.result();
+				const completionEvent: AssistantMessageEvent =
+					finalMessage.stopReason === "error" || finalMessage.stopReason === "aborted"
+						? { type: "error", reason: finalMessage.stopReason, error: finalMessage }
+						: { type: "done", reason: finalMessage.stopReason, message: finalMessage };
+				finalMessage = await applyAssistantMessageTransform(finalMessage, completionEvent, config, signal);
 				if (addedPartial) {
 					context.messages[context.messages.length - 1] = finalMessage;
 				} else {
@@ -320,14 +420,19 @@ async function streamAssistantResponse(
 	}
 
 	const finalMessage = await response.result();
+	const completionEvent: AssistantMessageEvent =
+		finalMessage.stopReason === "error" || finalMessage.stopReason === "aborted"
+			? { type: "error", reason: finalMessage.stopReason, error: finalMessage }
+			: { type: "done", reason: finalMessage.stopReason, message: finalMessage };
+	const transformedFinalMessage = await applyAssistantMessageTransform(finalMessage, completionEvent, config, signal);
 	if (addedPartial) {
-		context.messages[context.messages.length - 1] = finalMessage;
+		context.messages[context.messages.length - 1] = transformedFinalMessage;
 	} else {
-		context.messages.push(finalMessage);
-		await emit({ type: "message_start", message: { ...finalMessage } });
+		context.messages.push(transformedFinalMessage);
+		await emit({ type: "message_start", message: { ...transformedFinalMessage } });
 	}
-	await emit({ type: "message_end", message: finalMessage });
-	return finalMessage;
+	await emit({ type: "message_end", message: transformedFinalMessage });
+	return transformedFinalMessage;
 }
 
 /**

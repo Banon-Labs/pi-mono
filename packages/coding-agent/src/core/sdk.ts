@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { Agent, type AgentMessage, type ThinkingLevel } from "@mariozechner/pi-agent-core";
-import type { Message, Model } from "@mariozechner/pi-ai";
+import type { AssistantMessage, Message, Model } from "@mariozechner/pi-ai";
 import { getAgentDir, getDocsPath } from "../config.js";
 import { AgentSession } from "./agent-session.js";
 import { AuthStorage } from "./auth-storage.js";
@@ -126,6 +126,17 @@ export {
 
 function getDefaultAgentDir(): string {
 	return getAgentDir();
+}
+
+function isAutonomousStateGateModel(model: Model<any> | undefined): boolean {
+	return model?.provider === "gort-state-gate" || model?.provider.endsWith("-state-gate") === true;
+}
+
+function stripThinkingBlocks(message: AssistantMessage): AssistantMessage {
+	return {
+		...message,
+		content: message.content.filter((block) => block.type !== "thinking"),
+	};
 }
 
 /**
@@ -305,6 +316,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const runner = extensionRunnerRef.current;
 			if (!runner) return messages;
 			return runner.emitContext(messages);
+		},
+		transformAssistantMessage: async (message) => {
+			if (!isAutonomousStateGateModel(agent.state.model)) {
+				return message;
+			}
+			return stripThinkingBlocks(message);
 		},
 		steeringMode: settingsManager.getSteeringMode(),
 		followUpMode: settingsManager.getFollowUpMode(),

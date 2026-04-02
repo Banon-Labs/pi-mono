@@ -236,6 +236,106 @@ describe("agentLoop with AgentMessage", () => {
 		expect(convertedMessages.length).toBe(2);
 	});
 
+	it("should transform assistant messages before they are emitted and persisted", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		const executed: string[] = [];
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				return {
+					content: [{ type: "text", text: `echoed: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [tool],
+		};
+
+		const userPrompt: AgentMessage = createUserMessage("echo something");
+
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			transformAssistantMessage: async (message) => ({
+				...message,
+				content: message.content.filter((block) => block.type !== "thinking"),
+			}),
+		};
+
+		let callIndex = 0;
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (callIndex === 0) {
+					const partial = createAssistantMessage(
+						[{ type: "thinking", thinking: "Inspecting recent commits" }],
+						"toolUse",
+					);
+					const message = createAssistantMessage(
+						[
+							{ type: "thinking", thinking: "Inspecting recent commits" },
+							{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "hello" } },
+						],
+						"toolUse",
+					);
+					stream.push({ type: "start", partial });
+					stream.push({ type: "thinking_delta", contentIndex: 0, delta: "Inspecting recent commits", partial });
+					stream.push({ type: "done", reason: "toolUse", message });
+				} else {
+					const message = createAssistantMessage([{ type: "text", text: "done" }]);
+					stream.push({ type: "done", reason: "stop", message });
+				}
+				callIndex++;
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([userPrompt], context, config, undefined, streamFn);
+
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		const messages = await stream.result();
+		expect(executed).toEqual(["hello"]);
+
+		const assistantMessages = messages.filter((m): m is AssistantMessage => m.role === "assistant");
+		expect(assistantMessages.length).toBeGreaterThanOrEqual(1);
+		expect(assistantMessages[0].content.some((block) => block.type === "thinking")).toBe(false);
+		expect(assistantMessages[0].content.some((block) => block.type === "toolCall")).toBe(true);
+
+		const thinkingDeltaUpdates = events.filter(
+			(event): event is Extract<AgentEvent, { type: "message_update" }> =>
+				event.type === "message_update" && event.assistantMessageEvent.type === "thinking_delta",
+		);
+		expect(thinkingDeltaUpdates).toHaveLength(1);
+		const [thinkingDeltaUpdate] = thinkingDeltaUpdates;
+		if (thinkingDeltaUpdate.assistantMessageEvent.type !== "thinking_delta") {
+			throw new Error("Expected thinking_delta update");
+		}
+		expect(thinkingDeltaUpdate.assistantMessageEvent.delta).toBe("");
+
+		const assistantEvents = events.filter(
+			(event): event is Extract<AgentEvent, { type: "message_start" | "message_update" | "message_end" }> =>
+				event.type === "message_start" || event.type === "message_update" || event.type === "message_end",
+		);
+		expect(
+			assistantEvents.every(
+				(event) =>
+					event.message.role !== "assistant" || !event.message.content.some((block) => block.type === "thinking"),
+			),
+		).toBe(true);
+	});
+
 	it("should handle tool calls and results", async () => {
 		const toolSchema = Type.Object({ value: Type.String() });
 		const executed: string[] = [];

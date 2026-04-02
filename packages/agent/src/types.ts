@@ -93,6 +93,22 @@ export interface AfterToolCallContext {
 	context: AgentContext;
 }
 
+/**
+ * Transform applied to assistant messages as they stream.
+ *
+ * Use this to sanitize or rewrite assistant prose before it is emitted and
+ * persisted. The hook sees every assistant stream update, including thinking
+ * blocks and tool call deltas.
+ *
+ * Contract: must not throw or reject. Return the original message or another
+ * safe fallback value instead.
+ */
+export type AssistantMessageTransform = (
+	message: AssistantMessage,
+	event: AssistantMessageEvent,
+	signal?: AbortSignal,
+) => Promise<AssistantMessage | undefined> | AssistantMessage | undefined;
+
 export interface AgentLoopConfig extends SimpleStreamOptions {
 	model: Model<any>;
 
@@ -145,6 +161,18 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * ```
 	 */
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
+
+	/**
+	 * Optional transform applied to assistant messages as they stream.
+	 *
+	 * Use this to sanitize or rewrite assistant prose before it is emitted and
+	 * persisted. The hook sees every assistant stream update, including thinking
+	 * blocks and tool call deltas.
+	 *
+	 * Contract: must not throw or reject. Return the original message or another
+	 * safe fallback value instead.
+	 */
+	transformAssistantMessage?: AssistantMessageTransform;
 
 	/**
 	 * Resolves an API key dynamically for each LLM call.
